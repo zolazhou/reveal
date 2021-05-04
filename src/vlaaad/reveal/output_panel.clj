@@ -9,8 +9,9 @@
             [vlaaad.reveal.cursor :as cursor]
             [vlaaad.reveal.font :as font]
             [cljfx.coerce :as fx.coerce]
-            [vlaaad.reveal.style :as style])
-  (:import [javafx.scene.input ScrollEvent KeyEvent MouseEvent MouseButton KeyCode Clipboard ClipboardContent]
+            [vlaaad.reveal.style :as style]
+            [vlaaad.reveal.keymap :as keymap])
+  (:import [javafx.scene.input ScrollEvent KeyEvent MouseEvent MouseButton Clipboard ClipboardContent]
            [javafx.scene.canvas Canvas GraphicsContext]
            [javafx.event Event]
            [javafx.scene Node]
@@ -99,19 +100,18 @@
   layout)
 
 (defn- handle-key-pressed [this ^KeyEvent event]
-  (let [code (.getCode event)
-        shortcut (.isShortcutDown event)
+  (let [shortcut (.isShortcutDown event)
         alt (.isAltDown event)
         with-anchor (not (.isShiftDown event))
         layout (:layout this)
         {:keys [cursor anchor]} layout]
-    (condp = code
-      KeyCode/ESCAPE
+    (cond
+      (keymap/escape? event)
       (assoc this
         :layout
         (cond-> layout cursor layout/reset-anchor))
 
-      KeyCode/UP
+      (keymap/up? event)
       (assoc this
         :layout
         (cond
@@ -120,7 +120,7 @@
           (and with-anchor (not= cursor anchor)) (do (.consume event) (layout/cursor-to-start-of-selection layout))
           :else (do (.consume event) (layout/move-cursor-vertically layout with-anchor dec))))
 
-      KeyCode/DOWN
+      (keymap/down? event)
       (assoc this
         :layout
         (cond
@@ -129,7 +129,7 @@
           (and with-anchor (not= cursor anchor)) (do (.consume event) (layout/cursor-to-end-of-selection layout))
           :else (do (.consume event) (layout/move-cursor-vertically layout with-anchor inc))))
 
-      KeyCode/LEFT
+      (keymap/left? event)
       (assoc this
         :layout
         (cond
@@ -138,7 +138,7 @@
           (and with-anchor (not= cursor anchor)) (layout/cursor-to-start-of-selection layout)
           :else (layout/move-cursor-horizontally layout with-anchor dec)))
 
-      KeyCode/RIGHT
+      (keymap/right? event)
       (assoc this
         :layout
         (cond
@@ -147,13 +147,13 @@
           (and with-anchor (not= cursor anchor)) (layout/cursor-to-end-of-selection layout)
           :else (layout/move-cursor-horizontally layout with-anchor inc)))
 
-      KeyCode/PAGE_UP
+      (keymap/page-up? event)
       (cond-> this cursor (assoc :layout (layout/move-by-page layout dec with-anchor)))
 
-      KeyCode/PAGE_DOWN
+      (keymap/page-down? event)
       (cond-> this cursor (assoc :layout (layout/move-by-page layout inc with-anchor)))
 
-      KeyCode/HOME
+      (keymap/home? event)
       (assoc this
         :layout
         (cond
@@ -164,7 +164,7 @@
           (not cursor) (layout/scroll-to-left layout)
           :else (layout/cursor-to-beginning-of-line layout with-anchor)))
 
-      KeyCode/END
+      (keymap/end? event)
       (assoc this
         :layout
         (cond
@@ -175,36 +175,29 @@
           (not cursor) (layout/scroll-to-right layout)
           :else (layout/cursor-to-end-of-line layout with-anchor)))
 
-      KeyCode/C
-      (assoc this
-        :layout
-        (if (and (.isShortcutDown event) cursor)
-          (copy-selection! layout)
-          layout))
+      (and (keymap/copy? event) cursor)
+      (assoc this :layout (copy-selection! layout))
 
-      KeyCode/A
-      (assoc this
-        :layout
-        (if (.isShortcutDown event)
-          (layout/select-all layout)
-          layout))
+      (keymap/select-all? event)
+      (assoc this :layout (layout/select-all layout))
 
-      KeyCode/SPACE
+      (keymap/space? event)
       (cond-> this cursor (show-popup event))
 
-      KeyCode/ENTER
+      (keymap/enter? event)
       (cond-> this cursor (show-popup event))
 
-      KeyCode/SLASH
+      (keymap/slash? event)
       (show-search this)
 
-      KeyCode/F
-      (cond-> this shortcut show-search)
+      (keymap/search? event)
+      (show-search this)
 
       ;; FIXME should be on another level: only applies for main output panel
-      KeyCode/L
-      (cond-> this (.isControlDown event) clear-lines)
+      (keymap/clear? event)
+      (clear-lines this)
 
+      :else
       this)))
 
 (defmethod event/handle ::on-key-pressed [{:keys [id fx/event]}]
@@ -277,17 +270,23 @@
   (if (and (instance? KeyEvent event)
            (= KeyEvent/KEY_PRESSED (.getEventType ^KeyEvent event)))
     (let [^KeyEvent event event]
-      (condp = (.getCode event)
-        KeyCode/ESCAPE (do (focus! (search-event->output event))
-                           (.consume event)
-                           #(update % id hide-search))
-        KeyCode/ENTER (do (let [output (search-event->output event)]
-                            (fx/run-later (focus! output)))
-                          (.consume event)
-                          #(update % id select-highlight))
-        KeyCode/TAB (do (.consume event) identity)
-        KeyCode/UP (do (.consume event) #(update % id jump-to-prev-match))
-        KeyCode/DOWN (do (.consume event) #(update % id jump-to-next-match))
+      (cond
+        (keymap/escape? event)
+        (do (focus! (search-event->output event))
+            (.consume event)
+            #(update % id hide-search))
+        (keymap/enter? event)
+        (do (let [output (search-event->output event)]
+              (fx/run-later (focus! output)))
+            (.consume event)
+            #(update % id select-highlight))
+        (keymap/tab? event)
+        (do (.consume event) identity)
+        (keymap/up? event)
+        (do (.consume event) #(update % id jump-to-prev-match))
+        (keymap/down? event)
+        (do (.consume event) #(update % id jump-to-next-match))
+        :else
         identity))
     identity))
 
@@ -387,12 +386,12 @@
 
 (defn- init-search [this pid]
   (let [cursor (-> this :layout :cursor)
-        basis (if cursor (cursor/row cursor) (+ (-> this :layout :dropped-line-count)
-                                                (-> this
-                                                    :layout
-                                                    :drawn-line-count
-                                                    (/ 2)
-                                                    int)))]
+        basis  (if cursor (cursor/row cursor) (+ (-> this :layout :dropped-line-count)
+                                                 (-> this
+                                                     :layout
+                                                     :drawn-line-count
+                                                     (/ 2)
+                                                     int)))]
     (update this :search assoc
             :pid pid
             :basis basis
@@ -408,17 +407,17 @@
 (defn- search! [pid {:keys [id term]} {:keys [*state]}]
   (swap! *state update-if-exists id init-search pid)
   (when (seq term)
-    (let [*running (atom true)
-          s (Semaphore. 0)
-          f (event/daemon-future
-              (loop []
-                (let [old-state @*state
-                      this (get old-state id)]
-                  (when (and @*running (= pid (:pid (:search this))))
-                    (if (can-search? this)
-                      (compare-and-set! *state old-state (assoc old-state id (perform-search this)))
-                      (.acquire s))
-                    (recur)))))
+    (let [*running  (atom true)
+          s         (Semaphore. 0)
+          f         (event/daemon-future
+                      (loop []
+                        (let [old-state @*state
+                              this      (get old-state id)]
+                          (when (and @*running (= pid (:pid (:search this))))
+                            (if (can-search? this)
+                              (compare-and-set! *state old-state (assoc old-state id (perform-search this)))
+                              (.acquire s))
+                            (recur)))))
           watch-key [`search! pid]]
       (add-watch *state watch-key (fn [_ _ old new]
                                     (let [old-this (get old id)
@@ -436,13 +435,13 @@
 
 (defn- search-view [{:keys [term id]}]
   {:fx/type fx/ext-let-refs
-   :refs {:search {:fx/type rfx/ext-with-process
-                   :start search!
-                   :args {:id id :term term}
-                   :desc {:fx/type fx.lifecycle/scalar}}}
-   :desc {:fx/type search-view-impl
-          :term term
-          :id id}})
+   :refs    {:search {:fx/type rfx/ext-with-process
+                      :start   search!
+                      :args    {:id id :term term}
+                      :desc    {:fx/type fx.lifecycle/scalar}}}
+   :desc    {:fx/type search-view-impl
+             :term    term
+             :id      id}})
 
 (defn- draw [ctx layout search]
   (layout/draw ctx layout)
@@ -452,31 +451,31 @@
 (defn view [{:keys [layout popup id search]}]
   (let [{:keys [canvas-width canvas-height document-width document-height]} layout]
     {:fx/type fx/ext-let-refs
-     :refs (when popup
-             {::popup (assoc popup :fx/type action-popup/view
-                                   :on-cancel {::event/type ::hide-popup :id id})})
-     :desc {:fx/type :stack-pane
-            :children (cond->
-                        [{:fx/type canvas/view
-                          :draw [draw layout search]
-                          :width canvas-width
-                          :height canvas-height
-                          :pref-width document-width
-                          :pref-height document-height
-                          :focus-traversable true
-                          :on-focused-changed {::event/type ::on-focus-changed :id id}
-                          :on-key-pressed {::event/type ::on-key-pressed :id id}
-                          :on-mouse-dragged {::event/type ::on-mouse-dragged :id id}
-                          :on-mouse-pressed {::event/type ::on-mouse-pressed :id id}
-                          :on-mouse-released {::event/type ::on-mouse-released :id id}
-                          :on-width-changed {::event/type ::on-width-changed :id id}
-                          :on-height-changed {::event/type ::on-height-changed :id id}
-                          :on-scroll {::event/type ::on-scroll :id id}}]
-                        search
-                        (conj (assoc search
-                                :fx/type search-view
-                                :stack-pane/alignment :bottom-right
-                                :id id)))}}))
+     :refs    (when popup
+                {::popup (assoc popup :fx/type action-popup/view
+                                      :on-cancel {::event/type ::hide-popup :id id})})
+     :desc    {:fx/type  :stack-pane
+               :children (cond->
+                           [{:fx/type            canvas/view
+                             :draw               [draw layout search]
+                             :width              canvas-width
+                             :height             canvas-height
+                             :pref-width         document-width
+                             :pref-height        document-height
+                             :focus-traversable  true
+                             :on-focused-changed {::event/type ::on-focus-changed :id id}
+                             :on-key-pressed     {::event/type ::on-key-pressed :id id}
+                             :on-mouse-dragged   {::event/type ::on-mouse-dragged :id id}
+                             :on-mouse-pressed   {::event/type ::on-mouse-pressed :id id}
+                             :on-mouse-released  {::event/type ::on-mouse-released :id id}
+                             :on-width-changed   {::event/type ::on-width-changed :id id}
+                             :on-height-changed  {::event/type ::on-height-changed :id id}
+                             :on-scroll          {::event/type ::on-scroll :id id}}]
+                           search
+                           (conj (assoc search
+                                   :fx/type search-view
+                                   :stack-pane/alignment :bottom-right
+                                   :id id)))}}))
 
 (defn make
   ([]

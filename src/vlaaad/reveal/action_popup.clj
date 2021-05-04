@@ -12,7 +12,8 @@
             [clojure.walk :as walk]
             [vlaaad.reveal.action :as action]
             [cljfx.fx.node :as fx.node]
-            [vlaaad.reveal.stream :as stream])
+            [vlaaad.reveal.stream :as stream]
+            [vlaaad.reveal.keymap :as keymap])
   (:import [javafx.geometry Bounds]
            [javafx.stage Popup]
            [javafx.event Event]
@@ -53,18 +54,18 @@
 
 (defmethod event/handle ::on-action-key-pressed
   [{:keys [id ^KeyEvent fx/event action on-cancel view-id view-index]}]
-  (condp = (.getCode event)
-    KeyCode/ESCAPE (event/handle on-cancel)
-    KeyCode/ENTER (comp
-                    (event/handle on-cancel)
-                    (event/handle {::event/type :vlaaad.reveal.ui/execute-action
-                                   :view-id view-id
-                                   :view-index view-index
-                                   :new-result-panel (.isShortcutDown event)
-                                   :action action}))
-    KeyCode/UP #(update % id move-selected-index dec)
-    KeyCode/DOWN #(update % id move-selected-index inc)
-    identity))
+  (cond
+    (keymap/escape? event) (event/handle on-cancel)
+    (keymap/enter? event) (comp
+                            (event/handle on-cancel)
+                            (event/handle {::event/type      :vlaaad.reveal.ui/execute-action
+                                           :view-id          view-id
+                                           :view-index       view-index
+                                           :new-result-panel (.isShortcutDown event)
+                                           :action           action}))
+    (keymap/up? event) #(update % id move-selected-index dec)
+    (keymap/down? event) #(update % id move-selected-index inc)
+    :else identity))
 
 (defmethod event/handle ::on-action-pressed [{:keys [id action]}]
   #(update % id select-action action))
@@ -82,13 +83,13 @@
 (defmethod event/handle ::on-text-key-pressed
   [{:keys [text id ^KeyEvent fx/event on-cancel annotated-value view-id view-index]}]
   (let [value (:value annotated-value)]
-    (condp = (.getCode event)
-      KeyCode/ESCAPE
+    (cond
+      (keymap/escape? event)
       (if (empty? text)
         (event/handle on-cancel)
         #(update % id set-text ""))
 
-      KeyCode/ENTER
+      (keymap/enter? event)
       (if-not (str/blank? text)
         (try
           (let [form (read-string text)
@@ -114,12 +115,13 @@
           (catch Exception _ identity))
         identity)
 
-      KeyCode/UP
+      (keymap/input-up? event)
       #(update % id move-selected-index dec)
 
-      KeyCode/DOWN
+      (keymap/input-down? event)
       #(update % id move-selected-index inc)
 
+      :else
       identity)))
 
 (defmethod event/handle ::on-text-changed [{:keys [id fx/event]}]

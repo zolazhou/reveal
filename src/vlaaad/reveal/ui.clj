@@ -6,10 +6,12 @@
             [vlaaad.reveal.stream :as stream]
             [vlaaad.reveal.popup :as popup]
             [vlaaad.reveal.view :as view]
+            [vlaaad.reveal.keymap :as keymap]
+            [vlaaad.reveal.prefs :as prefs]
             [cljfx.prop :as fx.prop]
             [cljfx.mutator :as fx.mutator]
             [cljfx.lifecycle :as fx.lifecycle])
-  (:import [javafx.scene.input KeyEvent KeyCode]
+  (:import [javafx.scene.input KeyEvent]
            [javafx.scene Node Parent]
            [javafx.beans.value ChangeListener]
            [javafx.event Event]
@@ -63,28 +65,27 @@
   (if (and (instance? KeyEvent event)
            (= KeyEvent/KEY_PRESSED (.getEventType event)))
     (let [^KeyEvent event event
-          shortcut (.isShortcutDown event)
-          code (.getCode event)]
+          shortcut (.isShortcutDown event)]
       (cond
-        (and (= KeyCode/LEFT code) shortcut)
+        (and (keymap/left? event) shortcut)
         (do
           (.consume event)
           #(update-in % [:result-trees index] focus-tree/focus-prev))
 
-        (and (= KeyCode/RIGHT code) shortcut)
+        (and (keymap/right? event) shortcut)
         (do
           (.consume event)
           #(update-in % [:result-trees index] focus-tree/focus-next))
 
-        (and (= KeyCode/UP code) shortcut)
+        (and (keymap/up? event) shortcut)
         (do (.consume event)
             (event/handle (assoc e ::event/type ::show-popup)))
 
-        (and (= KeyCode/DOWN code) shortcut)
+        (and (keymap/down? event) shortcut)
         (do (.consume event)
             (event/handle (assoc e ::event/type ::hide-popup)))
 
-        (= KeyCode/ESCAPE code)
+        (keymap/escape? event)
         (do
           (.consume event)
           (event/handle (assoc e ::event/type ::close-view)))
@@ -125,6 +126,18 @@
    :on-advanced switch-focus!
    :desc desc})
 
+(defmethod event/handle ::on-window-x-changed [{:keys [fx/event]}]
+  #(assoc-in % [:window :x] event))
+
+(defmethod event/handle ::on-window-y-changed [{:keys [fx/event]}]
+  #(assoc-in % [:window :y] event))
+
+(defmethod event/handle ::on-window-width-changed [{:keys [fx/event]}]
+  #(assoc-in % [:window :width] event))
+
+(defmethod event/handle ::on-window-height-changed [{:keys [fx/event]}]
+  #(assoc-in % [:window :height] event))
+
 (defmethod event/handle ::on-window-focused-changed [{:keys [fx/event]}]
   #(assoc % :window-focused event))
 
@@ -163,16 +176,16 @@
       (if (= KeyEvent/KEY_PRESSED (.getEventType event))
         (do
           (.consume event)
-          (condp = (.getCode event)
-            KeyCode/ESCAPE (event/handle (assoc e ::event/type ::hide-popup))
-            KeyCode/ENTER (event/handle (assoc e ::event/type ::hide-popup))
-            KeyCode/UP (event/handle (assoc e ::event/type ::change-result-focus :fn focus-tree/focus-prev))
-            KeyCode/DOWN (if (.isShortcutDown event)
-                           (event/handle (assoc e ::event/type ::hide-popup))
-                           (event/handle (assoc e ::event/type ::change-result-focus :fn focus-tree/focus-next)))
-            KeyCode/BACK_SPACE (event/handle (assoc e ::event/type ::close-view))
-            KeyCode/DELETE (event/handle (assoc e ::event/type ::close-view))
-            identity))
+          (cond
+            (keymap/escape? event) (event/handle (assoc e ::event/type ::hide-popup))
+            (keymap/enter? event) (event/handle (assoc e ::event/type ::hide-popup))
+            (keymap/up? event) (event/handle (assoc e ::event/type ::change-result-focus :fn focus-tree/focus-prev))
+            (keymap/down? event) (if (.isShortcutDown event)
+                                   (event/handle (assoc e ::event/type ::hide-popup))
+                                   (event/handle (assoc e ::event/type ::change-result-focus :fn focus-tree/focus-next)))
+            (keymap/backspace? event) (event/handle (assoc e ::event/type ::close-view))
+            (keymap/delete? event) (event/handle (assoc e ::event/type ::close-view))
+            :else identity))
         identity))
     identity))
 
@@ -332,7 +345,7 @@
                                                  :on-action {::event/type ::quit}
                                                  :text "Quit"}}]}]}}})
 
-(defn- view [{:keys [title queue showing views result-trees confirm-exit-showing]
+(defn- view [{:keys [title queue showing views result-trees window confirm-exit-showing]
               ::keys [focus focus-key christmas]}]
   {:fx/type fx/ext-let-refs
    :refs (into {}
@@ -347,8 +360,10 @@
                                   :title title
                                   :on-close-request {::event/type ::confirm-exit}
                                   :showing showing
-                                  :width 400
-                                  :height 500
+                                  :x (get window :x 100)
+                                  :y (get window :y 100)
+                                  :width (get window :width 400)
+                                  :height (get window :height 500)
                                   :icons (if christmas
                                            ["vlaaad/reveal/logo-xmas-16.png"
                                             "vlaaad/reveal/logo-xmas-32.png"
@@ -361,6 +376,10 @@
                                             "vlaaad/reveal/logo-256.png"
                                             "vlaaad/reveal/logo-512.png"])
                                   :on-focused-changed {::event/type ::on-window-focused-changed}
+                                  :on-x-changed {::event/type ::on-window-x-changed}
+                                  :on-y-changed {::event/type ::on-window-y-changed}
+                                  :on-width-changed {::event/type ::on-window-width-changed}
+                                  :on-height-changed {::event/type ::on-window-height-changed}
                                   :scene {:fx/type :scene
                                           :stylesheets [(:cljfx.css/url @style/style)]
                                           :root {:fx/type :grid-pane
@@ -477,6 +496,7 @@
    (let [value-queue (ArrayBlockingQueue. 1024)
          *running (agent true :error-handler (fn [a ex]
                                                (send-via event/daemon-executor a when-running put-on-queue value-queue ex)))
+         window (prefs/window)
          now (LocalDate/now)
          christmas (or (.isAfter now (LocalDate/of (.getYear now) 12 20))
                        (.isBefore now (LocalDate/of (.getYear now) 1 2)))
@@ -486,6 +506,7 @@
                        :result-trees []
                        :title (cond-> "Reveal" title (str ": " title))
                        :showing true
+                       :window window
                        :dispose (constantly nil)})
          event-handler (event/->MapEventHandler *state)
          renderer (fx/create-renderer
@@ -510,10 +531,15 @@
                                                ~form)))))))
                      {::event/type ::submit :value x}))
          dispose! #(do
+                     (let [window (:window @*state)]
+                       (when (not= window (prefs/window))
+                         (prefs/persistent-window! window)))
                      (fx/unmount-renderer *state renderer)
                      (send-via event/daemon-executor *running stop-queue value-queue))]
      (fx/mount-renderer *state renderer)
      (swap! *state assoc :dispose dispose!)
+     (.addShutdownHook (Runtime/getRuntime)
+                       (Thread. ^Runnable dispose!))
      (fn
        ([]
         (dispose!)

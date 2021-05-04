@@ -4,6 +4,7 @@
             [vlaaad.reveal.event :as event]
             [vlaaad.reveal.stream :as stream]
             [vlaaad.reveal.action :as action]
+            [vlaaad.reveal.keymap :as keymap]
             vlaaad.reveal.doc
             [vlaaad.reveal.fx :as rfx]
             [cljfx.api :as fx]
@@ -217,7 +218,7 @@
         (dispatchEvent [_ e next]
           (if (and (instance? KeyEvent e)
                    (.isShortcutDown ^KeyEvent e)
-                   (#{KeyCode/UP KeyCode/DOWN KeyCode/LEFT KeyCode/RIGHT} (.getCode ^KeyEvent e)))
+                   (keymap/direction? e))
             e
             (.dispatchEvent dispatcher e next))))))
   (.selectFirst (.getSelectionModel view))
@@ -245,14 +246,26 @@
         (.setAll (.getSortOrder table) [col])
         (.clearAndSelect sm 0 col)))
 
-    (and (.isShortcutDown event) (= KeyCode/C (.getCode event)))
-    (let [^TableView table (.getTarget event)
+    (keymap/copy? event)
+    (let [^TableView table   (.getTarget event)
           ^TablePosition pos (first (.getSelectedCells (.getSelectionModel table)))]
       (fx/on-fx-thread
         (.setContent
           (Clipboard/getSystemClipboard)
           (doto (ClipboardContent.)
-            (.putString (stream/->str (.getCellData (.getTableColumn pos) (.getRow pos)))))))))
+            (.putString (stream/->str (.getCellData (.getTableColumn pos) (.getRow pos))))))))
+
+    (and (not (keymap/direction? event))
+         (or (keymap/left? event)
+             (keymap/right? event)
+             (keymap/up? event)
+             (keymap/down? event)))
+    (let [sm (.getSelectionModel ^TableView (.getTarget event))]
+      (cond
+        (keymap/down? event) (.selectBelowCell sm)
+        (keymap/up? event) (.selectAboveCell sm)
+        (keymap/left? event) (.selectLeftCell sm)
+        (keymap/right? event) (.selectRightCell sm))))
   identity)
 
 (defn table [{:keys [items columns]}]
